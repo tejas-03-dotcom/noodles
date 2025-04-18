@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Option Chain Data Fetcher</title>
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.1/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/0.21.1/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.3.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.13/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        .oi-change-positive {
+            color: green;
+            font-weight: bold;
+        }
+        .oi-change-negative {
+            color: red;
+            font-weight: bold;
+        }
+        .atm-row {
+            background-color: #f8f9fa;
+            font-weight: bold;
+        }
+        .card {
+            margin-bottom: 20px;
+        }
+        .badge {
+            font-size: 0.9rem;
+            padding: 5px 10px;
+        }
+        .metric-value {
+            font-weight: bold;
+        }
+        .metric-label {
+            min-width: 180px;
+            display: inline-block;
+        }
+        .alert-threshold {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="alert alert-warning alert-dismissible fade show alert-threshold" role="alert">
+        <strong>Threshold Alert!</strong> <span id="alertMessage"></span>
+        <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+            <span aria-hidden="true">&times;</span>
+        </button>
+    </div>
+
+    <div class="container mt-5">
+        <h2 class="text-center">Option Chain Data Fetcher</h2>
+        <p class="text-center text-muted">Top 10 Strike Prices (5 above & 5 below market price)</p>
+
+        <form id="dataForm" class="mt-4">
+            <div class="form-row">
+                <div class="form-group col-md-6">
+                    <label for="asset">Select Asset:</label>
+                    <select class="form-control" id="asset" required>
+                        <option value="NIFTY">NIFTY</option>
+                        <option value="BANKNIFTY">BANKNIFTY</option>
+                        <option value="FINNIFTY">FINNIFTY</option>
+                        <option value="MIDCPNIFTY">MIDCPNIFTY</option>
+                    </select>
+                </div>
+
+                <div class="form-group col-md-6">
+                    <label for="expiry">Select Expiry Date:</label>
+                    <input type="date" class="form-control" id="expiry" required>
+                </div>
+            </div>
+
+            <div class="form-group text-center">
+                <button type="submit" class="btn btn-primary mr-2">
+                    <i class="fas fa-play"></i> Start Auto Fetch
+                </button>
+                <button type="button" class="btn btn-danger" id="stopFetch" disabled>
+                    <i class="fas fa-stop"></i> Stop Auto Fetch
+                </button>
+            </div>
+        </form>
+
+        <hr>
+
+        <div class="d-flex justify-content-center mb-3">
+            <button class="btn btn-success mr-3" id="exportExcel" disabled>
+                <i class="fas fa-file-excel"></i> Export to Excel
+            </button>
+            <button class="btn btn-warning" id="exportPDF" disabled>
+                <i class="fas fa-file-pdf"></i> Export to PDF
+            </button>
+        </div>
+
+        <div id="loading" class="text-center mt-3" style="display: none;">
+            <div class="spinner-border text-primary" role="status">
+                <span class="sr-only">Loading...</span>
+            </div>
+            <span class="ml-2">Fetching data every 2 minutes...</span>
+            <div class="mt-2">
+                <span id="marketStatusBadge" class="badge badge-success">Market: OPEN</span>
+                <span id="sessionTime" class="badge badge-info ml-2">Session: -</span>
+                <span id="lastUpdate" class="badge badge-secondary ml-2">Last Update: -</span>
+            </div>
+        </div>
+
+        <div id="metricsContainer" class="card mt-3">
+            <div class="card-header">
+                <h5 class="mb-0">Market Metrics</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><span class="metric-label">0A. Current Time:</span> <span id="currentTime" class="metric-value">-</span></p>
+                        <p><span class="metric-label">0B. Market Price:</span> <span id="marketPrice" class="metric-value">-</span></p>
+                        <p><span class="metric-label">1a. Maximum Call OI:</span> <span id="maxCallOI" class="metric-value">-</span> @ <span id="maxCallOIStrike" class="metric-value">-</span></p>
+                        <p><span class="metric-label">1b. Maximum Put OI:</span> <span id="maxPutOI" class="metric-value">-</span> @ <span id="maxPutOIStrike" class="metric-value">-</span></p>
+                        <p><span class="metric-label">2A. Max Call OI % Change:</span> <span id="maxCallOIPctChange" class="metric-value">-</span></p>
+                        <p><span class="metric-label">2B. Max Put OI % Change:</span> <span id="maxPutOIPctChange" class="metric-value">-</span></p>
+                    </div>
+                    <div class="col-md-6">
+                        <p><span class="metric-label">3A. PCR (OI):</span> <span id="pcrOI" class="metric-value">-</span></p>
+                        <p><span class="metric-label">3B. PCR (OI) % Change:</span> <span id="pcrOIPctChange" class="metric-value">-</span></p>
+                        <p><span class="metric-label">4A. India VIX:</span> <span id="indiaVIX" class="metric-value">-</span></p>
+                        <p><span class="metric-label">4B. India VIX % Change:</span> <span id="indiaVIXPctChange" class="metric-value">-</span></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="table-responsive mt-3">
+            <table class="table table-bordered table-hover table-sm">
+                <thead class="thead-dark">
+                    <tr>
+                        <th>Strike Price</th>
+                        <th>Market Price</th>
+                        <th>PCR</th>
+                        <th>Call LTP</th>
+                        <th>Call OI</th>
+                        <th>Call ΔOI</th>
+                        <th>Call OI%</th>
+                        <th>Put LTP</th>
+                        <th>Put OI</th>
+                        <th>Put ΔOI</th>
+                        <th>Put OI%</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTableBody">
+                    <!-- Data will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <canvas id="oiTrendChart" height="250"></canvas>
+            </div>
+            <div class="col-md-6">
+                <canvas id="priceTrendChart" height="250"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let optionData = [];
+        let allIntervalData = [];
+        let currentSessionData = [];
+        let intervalId = null;
+        let oiTrendChart = null;
+        let priceTrendChart = null;
+        let sessionStartTime = null;
+        let isMarketOpen = false;
+        let currentAsset = '';
+        let currentExpiry = '';
+        let previousMetrics = null;
+        let previousIndiaVIX = null;
+        let currentMarketPrice = 0;
+        let alertThresholds = {
+           // pcrOI: { min: 0.8, max: 1.2 },
+            indiaVIX: { min: 10, max: 30 },
+           // callOIPctChange: { min: -50, max: 50 },
+           // putOIPctChange: { min: -50, max: 50 }
+        };
+
+        // Market hours configuration (IST)
+        const MARKET_OPEN_HOUR = 9;
+        const MARKET_OPEN_MINUTE = 15;
+        const MARKET_CLOSE_HOUR = 15;
+        const MARKET_CLOSE_MINUTE = 30;
+
+        // DOM elements
+        const dataForm = document.getElementById("dataForm");
+        const stopFetchBtn = document.getElementById("stopFetch");
+        const exportExcelBtn = document.getElementById("exportExcel");
+        const exportPDFBtn = document.getElementById("exportPDF");
+        const loadingDiv = document.getElementById("loading");
+        const marketStatusBadge = document.getElementById("marketStatusBadge");
+        const sessionTimeBadge = document.getElementById("sessionTime");
+        const lastUpdateBadge = document.getElementById("lastUpdate");
+        const dataTableBody = document.getElementById("dataTableBody");
+        const alertDiv = document.querySelector(".alert-threshold");
+        const alertMessage = document.getElementById("alertMessage");
+
+        // Initialize market status check
+        checkMarketStatus();
+        updateCurrentTime();
+
+        // Update current time every second
+        function updateCurrentTime() {
+            const now = new Date();
+            document.getElementById('currentTime').textContent = now.toLocaleTimeString();
+            setTimeout(updateCurrentTime, 1000);
+        }
+
+        // Fetch data from API
+        async function fetchData(asset, expiry) {
+            try {
+                const response = await axios.get(`http://localhost:3000/api/option-chain?symbol=${asset}&expiry=${expiry}`);
+                return response.data;
+            } catch (error) {
+                console.error("Error fetching data:", error);
+                alert("Failed to fetch data. Please check the API.");
+                return [];
+            }
+        }
+
+        // Filter to get top 5 strikes above and below market price
+        function filterTopStrikes(data, marketPrice) {
+            if (!data || data.length === 0) return [];
+
+            // Sort all strike prices
+            const sortedStrikes = [...data].sort((a, b) => a.strikePrice - b.strikePrice);
+
+            // Find index where strikePrice >= marketPrice
+            let marketIndex = sortedStrikes.findIndex(item => item.strikePrice >= marketPrice);
+            if (marketIndex === -1) marketIndex = sortedStrikes.length;
+
+            // Get 5 strikes below and 5 above market price
+            const startIdx = Math.max(marketIndex - 5, 0);
+            const endIdx = Math.min(marketIndex + 4, sortedStrikes.length - 1);
+
+            return sortedStrikes.slice(startIdx, endIdx + 1);
+        }
+
+        // Calculate PCR for each strike price
+        function calculatePCR(data) {
+            return data.map(item => {
+                const pcr = item.call.OI > 0 ? (item.put.OI / item.call.OI) : 0;
+                return {
+                    ...item,
+                    pcr: pcr.toFixed(2)
+                };
+            });
+        }
+
+        // Calculate various metrics
+        function calculateMetrics(data, previousData, indiaVIX, previousIndiaVIX) {
+            if (!data || data.length === 0) {
+                return {
+                    maxCallOI: 0,
+                    maxCallOIStrike: 0,
+                    maxCallOIPctChange: 0,
+                    maxPutOI: 0,
+                    maxPutOIStrike: 0,
+                    maxPutOIPctChange: 0,
+                    pcrOI: 0,
+                    pcrOIPctChange: 0,
+                    indiaVIX: indiaVIX || 0,
+                    indiaVIXPctChange: 0
+                };
+            }
+
+            // Find maximum OI values
+            let maxCallOI = 0;
+            let maxCallOIStrike = 0;
+            let maxCallOIPctChange = 0;
+
+            let maxPutOI = 0;
+            let maxPutOIStrike = 0;
+            let maxPutOIPctChange = 0;
+
+            data.forEach(item => {
+                // For calls
+                if (item.call.OI > maxCallOI) {
+                    maxCallOI = item.call.OI;
+                    maxCallOIStrike = item.strikePrice;
+                    maxCallOIPctChange = item.call.OIPctChange || 0;
+                }
+
+                // For puts
+                if (item.put.OI > maxPutOI) {
+                    maxPutOI = item.put.OI;
+                    maxPutOIStrike = item.strikePrice;
+                    maxPutOIPctChange = item.put.OIPctChange || 0;
+                }
+            });
+
+            // Calculate PCR (OI)
+            const totalCallOI = data.reduce((sum, item) => sum + item.call.OI, 0);
+            const totalPutOI = data.reduce((sum, item) => sum + item.put.OI, 0);
+            const pcrOI = totalCallOI > 0 ? (totalPutOI / totalCallOI).toFixed(2) : 0;
+
+            // Calculate PCR % change
+            let pcrOIPctChange = 0;
+            if (previousData) {
+                const prevPCR = previousData.pcrOI || 0;
+                if (prevPCR > 0) {
+                    pcrOIPctChange = ((pcrOI - prevPCR) / prevPCR * 100).toFixed(2);
+                }
+            }
+
+            // Calculate India VIX % change
+            let indiaVIXPctChange = 0;
+            if (previousIndiaVIX && previousIndiaVIX > 0 && indiaVIX) {
+                indiaVIXPctChange = ((indiaVIX - previousIndiaVIX) / previousIndiaVIX * 100).toFixed(2);
+            }
+
+            return {
+                maxCallOI,
+                maxCallOIStrike,
+                maxCallOIPctChange,
+                maxPutOI,
+                maxPutOIStrike,
+                maxPutOIPctChange,
+                pcrOI,
+                pcrOIPctChange,
+                indiaVIX: indiaVIX || 0,
+                indiaVIXPctChange
+            };
+        }
+
+        // Render data in the table
+        function renderTable(data, marketPrice) {
+            if (!data || data.length === 0) {
+                dataTableBody.innerHTML = '<tr><td colspan="11" class="text-center">No data available</td></tr>';
+                return;
+            }
+
+            // Calculate PCR for each strike
+            const dataWithPCR = calculatePCR(data);
+
+            let tableHTML = '';
+
+            dataWithPCR.forEach(item => {
+                const isATM = item.strikePrice === marketPrice;
+                const rowClass = isATM ? 'atm-row' : '';
+
+                tableHTML += `<tr class="${rowClass}">
+                    <td>${item.strikePrice}</td>
+                    <td>${marketPrice.toFixed(2)}</td>
+                    <td>${item.pcr}</td>
+                    <td>${item.call.LTP.toFixed(2)}</td>
+                    <td>${item.call.OI.toLocaleString()}</td>
+                    <td class="${getChangeClass(item.call.OIChange)}">${formatChange(item.call.OIChange)}</td>
+                    <td class="${getChangeClass(item.call.OIPctChange)}">${formatPercentage(item.call.OIPctChange)}</td>
+                    <td>${item.put.LTP.toFixed(2)}</td>
+                    <td>${item.put.OI.toLocaleString()}</td>
+                    <td class="${getChangeClass(item.put.OIChange)}">${formatChange(item.put.OIChange)}</td>
+                    <td class="${getChangeClass(item.put.OIPctChange)}">${formatPercentage(item.put.OIPctChange)}</td>
+                </tr>`;
+            });
+
+            dataTableBody.innerHTML = tableHTML;
+        }
+
+        // Helper function to format change values
+        function formatChange(value) {
+            if (value === undefined || value === null) return '-';
+            if (value > 0) return `+${value.toLocaleString()}`;
+            if (value < 0) return `${value.toLocaleString()}`;
+            return '0';
+        }
+
+        // Helper function to format percentage values
+        function formatPercentage(value) {
+            if (value === undefined || value === null) return '-';
+            if (value > 0) return `+${value.toFixed(2)}%`;
+            if (value < 0) return `${value.toFixed(2)}%`;
+            return '0%';
+        }
+
+        // Helper function to get CSS class for change values
+        function getChangeClass(value) {
+            if (value > 0) return 'oi-change-positive';
+            if (value < 0) return 'oi-change-negative';
+            return '';
+        }
+
+        // Calculate OI changes between current and previous data
+        function calculateOIChanges(currentData, previousData) {
+            if (!previousData) {
+                return currentData.map(item => ({
+                    ...item,
+                    call: {
+                        ...item.call,
+                        OIChange: 0,
+                        OIPctChange: 0
+                    },
+                    put: {
+                        ...item.put,
+                        OIChange: 0,
+                        OIPctChange: 0
+                    }
+                }));
+            }
+
+            return currentData.map(item => {
+                const prevItem = previousData.find(prev => prev.strikePrice === item.strikePrice);
+                const prevCallOI = prevItem?.call.OI || 0;
+                const prevPutOI = prevItem?.put.OI || 0;
+
+                // Calculate OI change percentage
+                const callOIPctChange = prevCallOI > 0 ?
+                    ((item.call.OI - prevCallOI) / prevCallOI * 100) : 0;
+                const putOIPctChange = prevPutOI > 0 ?
+                    ((item.put.OI - prevPutOI) / prevPutOI * 100) : 0;
+
+                return {
+                    ...item,
+                    call: {
+                        ...item.call,
+                        OIChange: item.call.OI - prevCallOI,
+                        OIPctChange: callOIPctChange
+                    },
+                    put: {
+                        ...item.put,
+                        OIChange: item.put.OI - prevPutOI,
+                        OIPctChange: putOIPctChange
+                    }
+                };
+            });
+        }
+
+        /*// Check if market is open or closed
+        function checkMarketStatus() {
+            const now = new Date();
+            const hours = now.getHours();
+            const minutes = now.getMinutes();
+
+            // Check if market is open (9:15 AM to 3:30 PM IST)
+            const isOpen = !(
+                (hours === MARKET_CLOSE_HOUR && minutes >= MARKET_CLOSE_MINUTE) ||
+                hours > MARKET_CLOSE_HOUR ||
+                hours < MARKET_OPEN_HOUR ||
+                (hours === MARKET_OPEN_HOUR && minutes < MARKET_OPEN_MINUTE)
+            );
+
+            if (isMarketOpen !== isOpen) {
+                isMarketOpen = isOpen;
+                updateMarketStatusUI();
+
+                if (!isMarketOpen && currentSessionData.length > 0) {
+                    alert("Market has closed. Data collection paused until next market open.");
+                    if (intervalId) {
+                        clearInterval(intervalId);
+                        intervalId = null;
+                        stopFetchBtn.disabled = true;
+                        loadingDiv.style.display = "none";
+                    }
+                }
+            }
+
+            return isOpen;
+        }
+*/
+        // Update market status UI
+        function updateMarketStatusUI() {
+            if (isMarketOpen) {
+                marketStatusBadge.className = 'badge badge-success';
+                marketStatusBadge.textContent = 'Market: OPEN';
+            } else {
+                marketStatusBadge.className = 'badge badge-danger';
+                marketStatusBadge.textContent = 'Market: CLOSED';
+            }
+        }
+
+        // Update session time UI
+        function updateSessionTimeUI() {
+            if (sessionStartTime) {
+                const duration = Math.floor((new Date() - sessionStartTime) / 60000); // in minutes
+                sessionTimeBadge.textContent = `Session: ${duration} mins`;
+            } else {
+                sessionTimeBadge.textContent = 'Session: -';
+            }
+        }
+
+        // Update last update time
+        function updateLastUpdateTime() {
+            lastUpdateBadge.textContent = `Last Update: ${new Date().toLocaleTimeString()}`;
+        }
+
+        // Update metrics UI
+        function updateMetricsUI(metrics) {
+            document.getElementById('marketPrice').textContent = currentMarketPrice.toFixed(2);
+            document.getElementById('maxCallOI').textContent = metrics.maxCallOI.toLocaleString();
+            document.getElementById('maxCallOIStrike').textContent = metrics.maxCallOIStrike;
+            document.getElementById('maxCallOIPctChange').textContent = formatPercentage(metrics.maxCallOIPctChange);
+            document.getElementById('maxPutOI').textContent = metrics.maxPutOI.toLocaleString();
+            document.getElementById('maxPutOIStrike').textContent = metrics.maxPutOIStrike;
+            document.getElementById('maxPutOIPctChange').textContent = formatPercentage(metrics.maxPutOIPctChange);
+            document.getElementById('pcrOI').textContent = metrics.pcrOI;
+            document.getElementById('pcrOIPctChange').textContent = formatPercentage(metrics.pcrOIPctChange);
+            document.getElementById('indiaVIX').textContent = metrics.indiaVIX ? metrics.indiaVIX.toFixed(2) : '-';
+            document.getElementById('indiaVIXPctChange').textContent = formatPercentage(metrics.indiaVIXPctChange);
+
+            // Set color for changes
+            document.getElementById('maxCallOIPctChange').className = getChangeClass(metrics.maxCallOIPctChange);
+            document.getElementById('maxPutOIPctChange').className = getChangeClass(metrics.maxPutOIPctChange);
+            document.getElementById('pcrOIPctChange').className = getChangeClass(metrics.pcrOIPctChange);
+            document.getElementById('indiaVIXPctChange').className = getChangeClass(metrics.indiaVIXPctChange);
+        }
+
+        // Check for threshold alerts
+        function checkThresholdAlerts(metrics) {
+            let alertMessages = [];
+
+            // PCR OI alert
+            if (metrics.pcrOI < alertThresholds.pcrOI.min) {
+                alertMessages.push(`PCR (OI) is below threshold (${metrics.pcrOI} < ${alertThresholds.pcrOI.min})`);
+            } else if (metrics.pcrOI > alertThresholds.pcrOI.max) {
+                alertMessages.push(`PCR (OI) is above threshold (${metrics.pcrOI} > ${alertThresholds.pcrOI.max})`);
+            }
+
+            // India VIX alert
+            if (metrics.indiaVIX < alertThresholds.indiaVIX.min) {
+                alertMessages.push(`India VIX is below threshold (${metrics.indiaVIX} < ${alertThresholds.indiaVIX.min})`);
+            } else if (metrics.indiaVIX > alertThresholds.indiaVIX.max) {
+                alertMessages.push(`India VIX is above threshold (${metrics.indiaVIX} > ${alertThresholds.indiaVIX.max})`);
+            }
+
+            // Call OI % change alert
+            if (metrics.maxCallOIPctChange < alertThresholds.callOIPctChange.min) {
+                alertMessages.push(`Max Call OI % Change is below threshold (${metrics.maxCallOIPctChange}% < ${alertThresholds.callOIPctChange.min}%)`);
+            } else if (metrics.maxCallOIPctChange > alertThresholds.callOIPctChange.max) {
+                alertMessages.push(`Max Call OI % Change is above threshold (${metrics.maxCallOIPctChange}% > ${alertThresholds.callOIPctChange.max}%)`);
+            }
+
+            // Put OI % change alert
+            if (metrics.maxPutOIPctChange < alertThresholds.putOIPctChange.min) {
+                alertMessages.push(`Max Put OI % Change is below threshold (${metrics.maxPutOIPctChange}% < ${alertThresholds.putOIPctChange.min}%)`);
+            } else if (metrics.maxPutOIPctChange > alertThresholds.putOIPctChange.max) {
+                alertMessages.push(`Max Put OI % Change is above threshold (${metrics.maxPutOIPctChange}% > ${alertThresholds.putOIPctChange.max}%)`);
+            }
+
+            // Show alert if any thresholds are crossed
+            if (alertMessages.length > 0) {
+                alertMessage.innerHTML = alertMessages.join('<br>');
+                alertDiv.style.display = 'block';
+
+                // Auto-hide after 10 seconds
+                setTimeout(() => {
+                    alertDiv.style.display = 'none';
+                }, 10000);
+            }
+        }
+
+        // Initialize/update OI trend chart
+        function updateOITrendChart() {
+            const ctx = document.getElementById('oiTrendChart').getContext('2d');
+
+            if (oiTrendChart) {
+                oiTrendChart.destroy();
+            }
+
+            if (currentSessionData.length < 2) {
+                return;
+            }
+
+            const labels = currentSessionData.map(interval =>
+                interval.timestamp.toLocaleTimeString()
+            );
+
+            const callOIData = currentSessionData.map(interval =>
+                interval.data.reduce((sum, item) => sum + item.call.OI, 0)
+            );
+
+            const putOIData = currentSessionData.map(interval =>
+                interval.data.reduce((sum, item) => sum + item.put.OI, 0)
+            );
+
+            oiTrendChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Total Call OI',
+                            data: callOIData,
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            fill: true,
+                            tension: 0.1
+                        },
+                        {
+                            label: 'Total Put OI',
+                            data: putOIData,
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            fill: true,
+                            tension: 0.1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Open Interest Trend'
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            }
+                        },
+                        y: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Open Interest'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Initialize/update Price trend chart
+        function updatePriceTrendChart() {
+            const ctx = document.getElementById('priceTrendChart').getContext('2d');
+
+            if (priceTrendChart) {
+                priceTrendChart.destroy();
+            }
+
+            if (currentSessionData.length < 2) {
+                return;
+            }
+
+            const labels = currentSessionData.map(interval =>
+                interval.timestamp.toLocaleTimeString()
+            );
+
+            const marketPrices = currentSessionData.map(interval => interval.marketPrice);
+            const avgCallPrices = currentSessionData.map(interval =>
+                interval.data.reduce((sum, item) => sum + item.call.LTP, 0) / interval.data.length
+            );
+            const avgPutPrices = currentSessionData.map(interval =>
+                interval.data.reduce((sum, item) => sum + item.put.LTP, 0) / interval.data.length
+            );
+
+            priceTrendChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Market Price',
+                            data: marketPrices,
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                            fill: false,
+                            tension: 0.1
+                        },
+                        {
+                            label: 'Avg Call Price',
+                            data: avgCallPrices,
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            fill: false,
+                            tension: 0.1
+                        },
+                        {
+                            label: 'Avg Put Price',
+                            data: avgPutPrices,
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            fill: false,
+                            tension: 0.1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Price Trend'
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            }
+                        },
+                        y: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Price'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Fetch India VIX data (mock implementation)
+        async function fetchIndiaVIX() {
+            try {
+                // In a real implementation, replace this with actual API call
+                // For now, we'll return a value between 10-20 with some variation
+                const baseValue = 15;
+                const variation = (Math.random() * 2 - 1); // -1 to +1
+                return parseFloat((baseValue + variation).toFixed(2));
+            } catch (error) {
+                console.error("Error fetching India VIX:", error);
+                return null;
+            }
+        }
+
+        // Main function to fetch and process data
+        async function autoFetchData() {
+            if (!checkMarketStatus()) {
+                loadingDiv.style.display = "none";
+                return;
+            }
+
+            const asset = document.getElementById("asset").value;
+            const expiry = document.getElementById("expiry").value;
+
+            if (!asset || !expiry) {
+                alert("Please select an asset and expiry date.");
+                return;
+            }
+
+            // Update current asset and expiry if changed
+            if (asset !== currentAsset || expiry !== currentExpiry) {
+                currentAsset = asset;
+                currentExpiry = expiry;
+                currentSessionData = [];
+                sessionStartTime = new Date();
+                previousMetrics = null;
+                previousIndiaVIX = null;
+            }
+
+            // Start new session if needed
+            if (!sessionStartTime) {
+                sessionStartTime = new Date();
+            }
+
+            loadingDiv.style.display = "block";
+            updateSessionTimeUI();
+
+            try {
+                // Fetch option chain data and India VIX in parallel
+                const [newData, indiaVIX] = await Promise.all([
+                    fetchData(asset, expiry),
+                    fetchIndiaVIX()
+                ]);
+
+                if (newData.length === 0) {
+                    dataTableBody.innerHTML = '<tr><td colspan="11" class="text-center">No data available</td></tr>';
+                    return;
+                }
+
+                currentMarketPrice = newData[0]?.marketPrice || 0;
+                const filteredData = filterTopStrikes(newData, currentMarketPrice);
+
+                // Calculate OI changes
+                const previousData = currentSessionData.length > 0
+                    ? currentSessionData[currentSessionData.length - 1].data
+                    : null;
+                const dataWithChanges = calculateOIChanges(filteredData, previousData);
+
+                const timestamp = new Date();
+                const intervalData = {
+                    timestamp,
+                    marketPrice: currentMarketPrice,
+                    data: dataWithChanges
+                };
+
+                // Store data
+                currentSessionData.push(intervalData);
+                allIntervalData.push(intervalData);
+
+                // Calculate metrics
+                const currentMetrics = calculateMetrics(dataWithChanges, previousMetrics, indiaVIX, previousIndiaVIX);
+
+                // Update UI
+                renderTable(dataWithChanges, currentMarketPrice);
+                updateMetricsUI(currentMetrics);
+                updateOITrendChart();
+                updatePriceTrendChart();
+                updateLastUpdateTime();
+
+                // Check for threshold alerts
+                checkThresholdAlerts(currentMetrics);
+
+                exportExcelBtn.disabled = false;
+                exportPDFBtn.disabled = false;
+
+                // Store current metrics and India VIX for next comparison
+                previousMetrics = currentMetrics;
+                previousIndiaVIX = indiaVIX;
+            } catch (error) {
+                console.error("Error in autoFetchData:", error);
+            } finally {
+                loadingDiv.style.display = "none";
+            }
+        }
+
+        // Export data to Excel
+        function exportToExcel() {
+            if (currentSessionData.length === 0) {
+                alert("No data to export!");
+                return;
+            }
+
+            const wb = XLSX.utils.book_new();
+            const asset = document.getElementById("asset").value;
+            const expiry = document.getElementById("expiry").value;
+
+            // Prepare data for export
+            const exportData = [];
+
+            currentSessionData.forEach(interval => {
+                interval.data.forEach(item => {
+                    exportData.push({
+                        "Timestamp": interval.timestamp.toLocaleString(),
+                        "Strike Price": item.strikePrice,
+                        "Market Price": interval.marketPrice,
+                        "PCR": item.pcr || 0,
+                        "Call LTP": item.call.LTP,
+                        "Call OI": item.call.OI,
+                        "Call ΔOI": item.call.OIChange,
+                        "Call OI%": item.call.OIPctChange,
+                        "Put LTP": item.put.LTP,
+                        "Put OI": item.put.OI,
+                        "Put ΔOI": item.put.OIChange,
+                        "Put OI%": item.put.OIPctChange,
+                        "VIX": interval.metrics?.indiaVIX || 0,
+                        "VIX % Change": interval.metrics?.indiaVIXPctChange || 0
+                    });
+                });
+            });
+
+            const ws = XLSX.utils.json_to_sheet(exportData);
+            XLSX.utils.book_append_sheet(wb, ws, "OptionChainData");
+
+            // Add metrics sheet with only the requested metrics
+            const metricsData = currentSessionData.map(interval => {
+                const metrics = calculateMetrics(interval.data);
+                return {
+                    "Timestamp": interval.timestamp.toLocaleString(),
+                    "Market Price": interval.marketPrice,
+                    "Max Call OI": metrics.maxCallOI,
+                    "Max Call Strike": metrics.maxCallOIStrike,
+                    "Max Call OI %": metrics.maxCallOIPctChange,
+                    "Max Put OI": metrics.maxPutOI,
+                    "Max Put Strike": metrics.maxPutOIStrike,
+                    "Max Put OI %": metrics.maxPutOIPctChange,
+                    "PCR (OI)": metrics.pcrOI,
+                    "PCR % Change": metrics.pcrOIPctChange,
+                    "India VIX": metrics.indiaVIX,
+                    "India VIX % Change": metrics.indiaVIXPctChange
+                };
+            });
+
+            const metricsWs = XLSX.utils.json_to_sheet(metricsData);
+            XLSX.utils.book_append_sheet(wb, metricsWs, "Metrics");
+
+            XLSX.writeFile(wb, `${asset}_${expiry}_OptionChain_${new Date().toISOString().slice(0,10)}.xlsx`);
+        }
+
+        // Export data to PDF
+        function exportToPDF() {
+            if (currentSessionData.length === 0) {
+                alert("No data to export!");
+                return;
+            }
+
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            const asset = document.getElementById("asset").value;
+            const expiry = document.getElementById("expiry").value;
+
+            // Add title
+            doc.setFontSize(16);
+            doc.text(`${asset} Option Chain Data - ${expiry}`, 14, 15);
+            doc.setFontSize(10);
+            doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 22);
+
+            // Prepare data for export
+            const exportData = [];
+
+            currentSessionData.forEach(interval => {
+                interval.data.forEach(item => {
+                    exportData.push([
+                        interval.timestamp.toLocaleTimeString(),
+                        item.strikePrice,
+                        interval.marketPrice.toFixed(2),
+                        item.strikePrice === interval.marketPrice ? 'ATM' :
+                            (item.strikePrice < interval.marketPrice ? 'Put' : 'Call'),
+                        item.call.LTP.toFixed(2),
+                        item.call.OI.toLocaleString(),
+                        formatChange(item.call.OIChange),
+                        formatPercentage(item.call.OIPctChange),
+                        item.put.LTP.toFixed(2),
+                        item.put.OI.toLocaleString(),
+                        formatChange(item.put.OIChange),
+                        formatPercentage(item.put.OIPctChange)
+                    ]);
+                });
+            });
+
+            // Add table
+            //Changed the Type into PCR
+            doc.autoTable({
+                head: [
+                    ['Time', 'Strike', 'Market', 'PCR', 'Call LTP', 'Call OI', 'Call ΔOI', 'Call OI%', 'Put LTP', 'Put OI', 'Put ΔOI', 'Put OI%']
+                ],
+                body: exportData,
+                startY: 30,
+                styles: {
+                    fontSize: 8,
+                    cellPadding: 2
+                },
+                headStyles: {
+                    fillColor: [44, 62, 80]
+                },
+                columnStyles: {
+                    0: { cellWidth: 15 },
+                    1: { cellWidth: 15 },
+                    2: { cellWidth: 15 },
+                    3: { cellWidth: 10 },
+                    4: { cellWidth: 15 },
+                    5: { cellWidth: 15 },
+                    6: { cellWidth: 15 },
+                    7: { cellWidth: 15 },
+                    8: { cellWidth: 15 },
+                    9: { cellWidth: 15 },
+                    10: { cellWidth: 15 },
+                    11: { cellWidth: 15 }
+                },
+                didDrawPage: function (data) {
+                    // Footer
+                    doc.setFontSize(10);
+                    doc.setTextColor(150);
+                    doc.text(
+                        `Page ${data.pageCount}`,
+                        doc.internal.pageSize.getWidth() / 2,
+                        doc.internal.pageSize.getHeight() - 10,
+                        { align: 'center' }
+                    );
+                }
+            });
+
+            // Add new page for metrics
+            doc.addPage();
+            doc.setFontSize(16);
+            doc.text('Market Metrics', 14, 15);
+
+            const metricsData = currentSessionData.map(interval => {
+                const metrics = calculateMetrics(interval.data);
+                return [
+                    interval.timestamp.toLocaleTimeString(),
+                    interval.marketPrice.toFixed(2),
+                    metrics.maxCallOI.toLocaleString(),
+                    metrics.maxCallOIStrike,
+                    formatPercentage(metrics.maxCallOIPctChange),
+                    metrics.maxPutOI.toLocaleString(),
+                    metrics.maxPutOIStrike,
+                    formatPercentage(metrics.maxPutOIPctChange),
+                    metrics.pcrOI,
+                    formatPercentage(metrics.pcrOIPctChange),
+                    metrics.indiaVIX.toFixed(2),
+                    formatPercentage(metrics.indiaVIXPctChange)
+                ];
+            });
+
+            doc.autoTable({
+                head: [
+                    ['Time', 'Market', 'Max Call OI', 'Strike', 'Call OI%', 'Max Put OI', 'Strike', 'Put OI%', 'PCR', 'PCR % Chg', 'India VIX', 'VIX % Chg']
+                ],
+                body: metricsData,
+                startY: 25,
+                styles: {
+                    fontSize: 8,
+                    cellPadding: 2
+                },
+                headStyles: {
+                    fillColor: [44, 62, 80]
+                }
+            });
+
+            doc.save(`${asset}_${expiry}_OptionChain_${new Date().toISOString().slice(0,10)}.pdf`);
+        }
+
+        // Initialize expiry date to next Thursday
+        function initializeExpiryDate() {
+            const today = new Date();
+            const dayOfWeek = today.getDay(); // 0 (Sunday) to 6 (Saturday)
+            let daysToAdd = 4 - dayOfWeek; // Thursday is day 4
+
+            // If today is after Thursday, add days to next Thursday
+            if (daysToAdd < 0) {
+                daysToAdd += 7;
+            }
+
+            // If today is Thursday and market is closed (after 3:30 PM), use next Thursday
+            if (daysToAdd === 0) {
+                const hours = today.getHours();
+                const minutes = today.getMinutes();
+                if (hours > MARKET_CLOSE_HOUR || (hours === MARKET_CLOSE_HOUR && minutes >= MARKET_CLOSE_MINUTE)) {
+                    daysToAdd = 7;
+                }
+            }
+
+            const expiryDate = new Date(today);
+            expiryDate.setDate(today.getDate() + daysToAdd);
+
+            // Format as YYYY-MM-DD for date input
+            const formattedDate = expiryDate.toISOString().split('T')[0];
+            document.getElementById("expiry").value = formattedDate;
+        }
+
+        // Event listeners
+        dataForm.addEventListener("submit", function(e) {
+            e.preventDefault();
+
+            // Clear any existing interval
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+
+            // Start new interval (2 minutes)
+            autoFetchData();
+            intervalId = setInterval(autoFetchData, 2 * 60 * 1000);
+
+            stopFetchBtn.disabled = false;
+            exportExcelBtn.disabled = true;
+            exportPDFBtn.disabled = true;
+        });
+
+        stopFetchBtn.addEventListener("click", function() {
+            if (intervalId) {
+                clearInterval(intervalId);
+                intervalId = null;
+                loadingDiv.style.display = "none";
+                stopFetchBtn.disabled = true;
+            }
+        });
+
+        exportExcelBtn.addEventListener("click", exportToExcel);
+        exportPDFBtn.addEventListener("click", exportToPDF);
+
+        // Initialize the page
+        initializeExpiryDate();
+    </script>
+</body>
+</html>
